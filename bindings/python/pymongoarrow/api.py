@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import multiprocessing
 import warnings
 from decimal import Decimal
 
@@ -61,6 +62,7 @@ from pymongoarrow.types import _validate_schema, get_numpy_type
 __all__ = [
     "aggregate_arrow_all",
     "find_arrow_all",
+    "find_arrow_all_multiprocesses",
     "aggregate_pandas_all",
     "find_pandas_all",
     "aggregate_numpy_all",
@@ -75,6 +77,7 @@ __all__ = [
 _PATCH_METHODS = [
     "aggregate_arrow_all",
     "find_arrow_all",
+    "find_arrow_all_multiprocesses",
     "aggregate_pandas_all",
     "find_pandas_all",
     "aggregate_numpy_all",
@@ -130,6 +133,58 @@ def find_arrow_all(collection, query, *, schema=None, allow_invalid=False, **kwa
         context.process_bson_stream(batch)
 
     return context.finish()
+
+
+def process_batch(schema, codec_options, allow_invalid, batch):
+    context = PyMongoArrowContext(schema, codec_options=codec_options, allow_invalid=allow_invalid)
+    context.process_bson_stream(batch)
+
+    return context.finish()
+
+
+def find_arrow_all_multiprocesses(collection, query, *, schema=None, allow_invalid=False, **kwargs):
+    """Method that returns the results of a find query as a
+    :class:`pyarrow.Table` instance.
+
+    :Parameters:
+      - `collection`: Instance of :class:`~pymongo.collection.Collection`.
+        against which to run the ``find`` operation.
+      - `query`: A mapping containing the query to use for the find operation.
+      - `schema` (optional): Instance of :class:`~pymongoarrow.schema.Schema`.
+        If the schema is not given, it will be inferred using the data in the
+        result set.
+      - `allow_invalid` (optional): If set to ``True``,
+        results will have all fields that do not conform to the schema silently converted to NaN.
+
+    Additional keyword-arguments passed to this method will be passed
+    directly to the underlying ``find`` operation.
+
+    :Returns:
+      An instance of class:`pyarrow.Table`.
+    """
+
+    for opt in ("cursor_type",):
+        if kwargs.pop(opt, None):
+            warnings.warn(
+                f"Ignoring option {opt!r} as it is not supported by PyMongoArrow",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    if schema:
+        kwargs.setdefault("projection", schema._get_projection())
+
+    raw_batch_cursor = collection.find_raw_batches(query, **kwargs)
+
+    args_iterable = []
+
+    for batch in raw_batch_cursor:
+        args_iterable.append((schema, collection.codec_options, allow_invalid, batch))
+
+    with multiprocessing.Pool() as pool:
+        results = pool.starmap(process_batch, args_iterable)
+
+    return pa.concat_tables(results, promote_options="default")
 
 
 def aggregate_arrow_all(collection, pipeline, *, schema=None, allow_invalid=False, **kwargs):
