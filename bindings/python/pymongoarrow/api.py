@@ -124,6 +124,8 @@ def find_arrow_all(collection, query, *, schema=None, allow_invalid=False, **kwa
     :Returns:
       An instance of class:`pyarrow.Table`.
     """
+    import psutil
+    import time
     _add_driver_metadata(collection)
     context = PyMongoArrowContext(
         schema, codec_options=collection.codec_options, allow_invalid=allow_invalid
@@ -140,10 +142,34 @@ def find_arrow_all(collection, query, *, schema=None, allow_invalid=False, **kwa
     if schema:
         kwargs.setdefault("projection", schema._get_projection())
 
+    parent = psutil.Process()
+    start = time.monotonic()
+
+    def total_cpu_time():
+        procs = [parent] + parent.children(recursive=True)
+        total = 0.0
+        for p in procs:
+            try:
+                t = p.cpu_times()
+            except psutil.NoSuchProcess:
+                continue
+            total += t.user + t.system
+        return total
+
+    start_cpu = total_cpu_time()
     raw_batch_cursor = collection.find_raw_batches(query, **kwargs)
     for batch in raw_batch_cursor:
         context.process_bson_stream(batch)
+    end = time.monotonic()
+    end_cpu = total_cpu_time()
 
+    duration = end - start
+    total_cpu = end_cpu - start_cpu
+    cpu_percent = (total_cpu / duration) * 100  # can exceed 100
+
+    print(f"[single] CPU seconds (parent+children): {total_cpu:.3f}")
+    print(f"[single] Wall time: {duration:.3f}")
+    print(f"[single] Total CPU utilization: {cpu_percent:.1f}%")
     return context.finish()
 
 
@@ -174,7 +200,8 @@ def find_arrow_all_multiprocesses(collection, query, *, schema=None, allow_inval
     :Returns:
       An instance of class:`pyarrow.Table`.
     """
-
+    import psutil
+    import time
     for opt in ("cursor_type",):
         if kwargs.pop(opt, None):
             warnings.warn(
@@ -186,15 +213,42 @@ def find_arrow_all_multiprocesses(collection, query, *, schema=None, allow_inval
     if schema:
         kwargs.setdefault("projection", schema._get_projection())
 
+    parent = psutil.Process()
+    start = time.monotonic()
+
+    def total_cpu_time():
+        procs = [parent] + parent.children(recursive=True)
+        total = 0.0
+        for p in procs:
+            try:
+                t = p.cpu_times()
+            except psutil.NoSuchProcess:
+                continue
+            total += t.user + t.system
+        return total
+
+    start_cpu = total_cpu_time()
+
     raw_batch_cursor = collection.find_raw_batches(query, **kwargs)
 
-    args_iterable = []
+    args_iterable = [(schema, collection.codec_options, allow_invalid, batch)
+                     for batch in raw_batch_cursor]
 
-    for batch in raw_batch_cursor:
-        args_iterable.append((schema, collection.codec_options, allow_invalid, batch))
-
-    with multiprocessing.Pool() as pool:
+    print("in find arrow all multiprocess")
+    print(len(args_iterable))
+    with multiprocessing.Pool(processes=4) as pool:
         results = pool.starmap(process_batch, args_iterable)
+
+    end = time.monotonic()
+    end_cpu = total_cpu_time()
+
+    duration = end - start
+    total_cpu = end_cpu - start_cpu
+    cpu_percent = (total_cpu / duration) * 100  # can exceed 100
+
+    print(f"[multi] CPU seconds (parent+children): {total_cpu:.3f}")
+    print(f"[multi] Wall time: {duration:.3f}")
+    print(f"[multi] Total CPU utilization: {cpu_percent:.1f}%")
 
     return pa.concat_tables(results, promote_options="default")
 
