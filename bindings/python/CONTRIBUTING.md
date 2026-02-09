@@ -183,6 +183,8 @@ Conda users can install `libbson` as follows:
 $ conda install --channel conda-forge libbson pkg-config
 ```
 
+Then, set `LIBBSON_INSTALL_DIR` to the location of `libbson`.
+
 The minimum required version is listed in `pymongoarrow/version.py`. If
 you try to build with a lower version a `ValueError` will be raised.
 

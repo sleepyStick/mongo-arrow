@@ -14,7 +14,12 @@
 import unittest
 from test import client_context
 
-from pymongoarrow.api import find_arrow_all, find_pandas_all, find_polars_all
+from pymongoarrow.api import (
+    find_arrow_all,
+    find_arrow_all_multiprocesses,
+    find_pandas_all,
+    find_polars_all,
+)
 from pymongoarrow.schema import Schema
 from pymongoarrow.version import __version__
 
@@ -76,3 +81,19 @@ class TestPyMongoArrow(unittest.TestCase):
         self.assertLess(total, 1000)
         table = find_arrow_all(self.client.test.test, {}, schema=schema)
         self.assertEqual(table.shape, (total, 1))
+
+    def test_temp(self):
+        self.client.test.drop_collection("test")
+        self.client.test.create_collection(
+            "test",
+        )
+        schema = Schema({"data": bool, "num": int})
+        data = [{"data": False, "num": i} for i in range(10_000_000)]
+        self.client.test.test.insert_many(data)
+
+        # cursor = self.client.test.test.find({})
+        # total = len(list(cursor))
+        find_arrow_all(self.client.test.test, {}, schema=schema)
+        find_arrow_all_multiprocesses(self.client.test.test, {}, schema=schema)
+        # print(table.shape)
+        # self.assertEqual(table.shape, (total, 2))
